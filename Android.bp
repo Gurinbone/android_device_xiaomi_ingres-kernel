@@ -1,0 +1,60 @@
+kernel_headers {
+    name: "qti_kernel_headers",
+    vendor_available: true,
+    recovery_available: true,
+}
+
+kernel_headers {
+    name: "qti_display_kernel_headers",
+    vendor_available: true,
+    recovery_available: true,
+}
+
+kernel_headers {
+    name: "audio_kernel_headers",
+    vendor_available: true,
+    recovery_available: true,
+}
+
+kernel_headers {
+    name: "qti_audio_kernel_uapi",
+    vendor_available: true,
+    recovery_available: true,
+}
+
+kernel_headers {
+    name: "qti_ipa_kernel_headers",
+    vendor_available: true,
+    recovery_available: true,
+}
+
+kernel_headers {
+    name: "smmu_proxy_uapi_header",
+    vendor_available: true,
+    recovery_available: true,
+}
+
+kernel_headers {
+    name: "generated_kernel_headers",
+    vendor_available: true,
+    recovery_available: true,
+}
+
+soong_config_module_type {
+    name: "android_hardware_qtiaudio_config_default",
+    module_type: "cc_defaults",
+    config_namespace: "android_hardware_audio",
+    bool_variables: [
+        "run_64bit",
+    ],
+    properties: ["compile_multilib"],
+}
+
+android_hardware_qtiaudio_config_default {
+    name: "android_hardware_qtiaudio_config_defaults",
+    soong_config_variables: {
+        run_64bit: {
+            compile_multilib: "64",
+        },
+    },
+}
