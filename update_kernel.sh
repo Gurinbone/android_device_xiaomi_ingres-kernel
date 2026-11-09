@@ -298,19 +298,57 @@ cp -f "${OUT_DIR}/.config" "${DEST_DIR}/.config"
 cp -f "${OUT_DIR}/Module.symvers" "${DEST_DIR}/Module.symvers"
 cp -f "${OUT_DIR}/System.map" "${DEST_DIR}/System.map"
 
-# 2. Salin DTB dasar & Buat dtbo.img
-echo "  [-] Menyalin DTB dasar & menyusun dtbo.img..."
-cp -f "${OUT_DIR}/arch/arm64/boot/dts/vendor/qcom/waipio"*.dtb "${DEST_DIR}/dtbs/"
+# 2. Penggabungan Techpack Device Trees (merge_dtbs.py) & Perakitan dtbo.img
+CURRENT_STEP="Penggabungan & Perakitan DTBs / DTBO (merge_dtbs.py)"
+echo "  [-] Menyiapkan tool fdtoverlaymerge..."
+mkdir -p "${DEST_DIR}/tools/bin"
+if [[ ! -x "${DEST_DIR}/tools/bin/fdtoverlaymerge" ]]; then
+    echo '#define DTC_VERSION "DTC 1.7.0-Android-build"' > "${DEST_DIR}/tools/bin/version_gen.h"
+    gcc -O2 -DNO_YAML \
+        -I"${ROOT_DIR}/external/dtc" \
+        -I"${ROOT_DIR}/external/dtc/libfdt" \
+        -I"${DEST_DIR}/tools/bin" \
+        "${ROOT_DIR}/external/dtc/fdtoverlaymerge.c" \
+        "${ROOT_DIR}/external/dtc/util.c" \
+        "${ROOT_DIR}/external/dtc/libfdt/"*.c \
+        -o "${DEST_DIR}/tools/bin/fdtoverlaymerge"
+fi
+
+MERGE_DTBS_PY="${DEST_DIR}/tools/merge_dtbs.py"
+if [[ ! -f "${MERGE_DTBS_PY}" ]]; then
+    echo "[ERROR] ${MERGE_DTBS_PY} tidak ditemukan!"
+    exit 1
+fi
+
+echo "  [-] Menjalankan merge_dtbs.py untuk menggabungkan Base DTB dan Techpack Overlays..."
+DTBS_WORK="${KERNEL_DIR}/out/dtbs_merge_work"
+rm -rf "${DTBS_WORK}"
+mkdir -p "${DTBS_WORK}/src" "${DTBS_WORK}/base" "${DTBS_WORK}/out"
+
+cp -r "${OUT_DIR}/arch/arm64/boot/dts/vendor" "${DTBS_WORK}/src/"
+mv "${DTBS_WORK}/src/vendor/"*/*.dtb "${DTBS_WORK}/src/vendor/"*/*.dtbo "${DTBS_WORK}/base/"
+
+PATH="${DEST_DIR}/tools/bin:${ROOT_DIR}/out/host/linux-x86/bin:$PATH" \
+    python3 "${MERGE_DTBS_PY}" \
+    --base "${DTBS_WORK}/base" \
+    --techpack "${DTBS_WORK}/src/vendor" \
+    --out "${DTBS_WORK}/out"
+
+echo "  [-] Menyalin merged DTB ke ${DEST_DIR}/dtbs/..."
+cp -f "${DTBS_WORK}/out"/waipio*.dtb "${DEST_DIR}/dtbs/"
 
 MKDTBOIMG="${ROOT_DIR}/system/libufdt/utils/src/mkdtboimg.py"
 if [[ -f "${MKDTBOIMG}" ]]; then
-    python3 "${MKDTBOIMG}" create "${DEST_DIR}/dtbs/dtbo.img" --page_size=4096 "${OUT_DIR}/arch/arm64/boot/dts/vendor/qcom/"*.dtbo
+    echo "  [-] Menyusun merged dtbo.img (page_size=4096)..."
+    python3 "${MKDTBOIMG}" create "${DEST_DIR}/dtbs/dtbo.img" --page_size=4096 $(find "${DTBS_WORK}/out" -type f -name "*.dtbo" | sort)
 else
     echo "  [ERROR] mkdtboimg.py tidak ditemukan di ${MKDTBOIMG}!"
     exit 1
 fi
 
-# 3. Sinkronisasi Kernel Modules (.ko)
+# 3. Sinkronisasi Kernel Modules (.ko) & Stripping Debug Symbols
+CURRENT_STEP="Sinkronisasi & Stripping Modul Kernel"
+STRIP_TOOL="${CLANG_DIR}/bin/llvm-strip"
 echo "  [-] Mengindeks modul-modul yang baru dikompilasi..."
 declare -A KO_MAP=()
 while IFS= read -r ko_file; do
@@ -323,7 +361,7 @@ if [[ -n "${KO_MAP["wlan.ko"]:-}" && -z "${KO_MAP["qca_cld3_wlan.ko"]:-}" ]]; th
     KO_MAP["qca_cld3_wlan.ko"]="${KO_MAP["wlan.ko"]}"
 fi
 
-echo "  [-] Menyalin modul ke vendor_ramdisk/..."
+echo "  [-] Menyalin dan melakukan stripping modul ke vendor_ramdisk/..."
 ramdisk_copied=0
 ramdisk_missing=0
 if [[ -f "${DEST_DIR}/vendor_ramdisk/modules.load.recovery" ]]; then
@@ -331,6 +369,9 @@ if [[ -f "${DEST_DIR}/vendor_ramdisk/modules.load.recovery" ]]; then
         [[ -z "$mod" || "$mod" =~ ^# ]] && continue
         if [[ -n "${KO_MAP["${mod}"]:-}" ]]; then
             cp -f "${KO_MAP["${mod}"]}" "${DEST_DIR}/vendor_ramdisk/${mod}"
+            if [[ -x "${STRIP_TOOL}" ]]; then
+                "${STRIP_TOOL}" --strip-debug "${DEST_DIR}/vendor_ramdisk/${mod}" 2>/dev/null || true
+            fi
             ((ramdisk_copied++)) || true
         else
             echo "    [WARN] Modul ${mod} tidak ditemukan di build output!"
@@ -339,7 +380,7 @@ if [[ -f "${DEST_DIR}/vendor_ramdisk/modules.load.recovery" ]]; then
     done < "${DEST_DIR}/vendor_ramdisk/modules.load.recovery"
 fi
 
-echo "  [-] Menyalin modul ke vendor_dlkm/..."
+echo "  [-] Menyalin dan melakukan stripping modul ke vendor_dlkm/..."
 dlkm_copied=0
 dlkm_missing=0
 if [[ -f "${DEST_DIR}/vendor_dlkm/modules.load" ]]; then
@@ -347,6 +388,9 @@ if [[ -f "${DEST_DIR}/vendor_dlkm/modules.load" ]]; then
         [[ -z "$mod" || "$mod" =~ ^# ]] && continue
         if [[ -n "${KO_MAP["${mod}"]:-}" ]]; then
             cp -f "${KO_MAP["${mod}"]}" "${DEST_DIR}/vendor_dlkm/${mod}"
+            if [[ -x "${STRIP_TOOL}" ]]; then
+                "${STRIP_TOOL}" --strip-debug "${DEST_DIR}/vendor_dlkm/${mod}" 2>/dev/null || true
+            fi
             ((dlkm_copied++)) || true
         else
             echo "    [WARN] Modul ${mod} tidak ditemukan di build output!"
